@@ -1,0 +1,168 @@
+import os
+from dotenv import load_dotenv
+load_dotenv()
+key = os.getenv("tmdb_API_key") # should be changed to whatever the key is
+print("API key loaded:", key is not None) # check key was loaded correctly
+import requests
+import json
+import time
+
+# use pagination to request movie lists in any endpoint
+def fetch_movies(category, extra_params, pages = 5, delay = 0.5, api_key = key, verbose = True):
+    
+    base_url = "https://api.themoviedb.org/3/discover/movie" # use discover endpoint to get details of movies
+    all_movies= [] # initialize list to store movies
+    
+    print(f"Fetching {category} movies:")
+
+
+    for page in range(1, pages + 1):
+        
+        # define parameters for requests.get() function
+        params = {
+            'api_key': api_key,
+            'page': page,
+            **extra_params
+        }
+
+        try: # get results from page and save results in all_movies
+            response = requests.get(base_url, params = params) # get results of page
+            response.raise_for_status() # throw status
+            data = response.json() # save data as json
+
+            if 'results' in data:
+                all_movies.extend(data['results']) # add elements (append) to the end of the movies list
+                if verbose == True:
+                    print(f" Page {page}: {len(data['results'])} movies") # print progress
+            else:
+                print(f"No Results on Page {page}")
+
+        except requests.exceptions.RequestException as e: # stop code from running
+            print(f"Error on Page {page}: {e}")
+            break
+        time.sleep(delay) # ensure api limit
+
+    print(f"Success! Total {category}: {len(all_movies)} movies")
+
+    return all_movies# define ways to search discover endpoint
+categories = {
+
+    # include only top rated movies, defined by top 100 movies with at least 1000 votes
+    "Top Rated": {
+        "extra_params": {
+            "sort_by": "vote_average.desc",
+            "vote_count.gte": 1000
+        }
+    },
+
+    # include medium rated movies, defined by movies with an average rating of 4.5-7.5 and at least 100 votes
+    "Medium Rated": {
+        "extra_params": {
+            "sort_by": "vote_average.desc",
+            "vote_average.gte": 4.5,
+            "vote_average.lte": 7.5,
+            "vote_count.gte": 100
+        }
+    },
+
+    # include bottom rated movies, defined by movies with an average rating of below 4.5 and at least 100 votes
+    "Bottom Rated": {
+        "extra_params": {
+            "sort_by": "vote_average.asc",
+            "vote_average.lte": 4.5,
+            "vote_count.gte": 100
+        }
+    },
+
+    # include most popular movies
+    "Most Popular Rated": {
+        "extra_params": {
+            "sort_by": "popularity.desc",
+            "vote_count.gte": 100
+        }
+    },
+
+    # include least popular movies
+    "Least Popular Rated": {
+        "extra_params": {
+            "sort_by": "popularity.asc",
+            "vote_count.gte": 100
+        }
+    }
+}
+
+# define function to go through categories and return movie data
+def fetch_all_movies(categories, pages_per_category = 5, delay = 0.5):
+    full_dataset = [] # initialize dataset to store all movies
+
+    for name, cfg in categories.items():
+        # call helper function to grab movies
+        movies = fetch_movies(
+            category = name,
+            extra_params = cfg['extra_params'],
+            pages = pages_per_category,
+            delay = delay
+        )
+        
+        full_dataset.extend(movies) # add elements (append) to the end of the movies list
+
+    print(f"Total Movies Across All Categories: {len(full_dataset)}")
+
+    return full_dataset
+
+all_movies = fetch_all_movies(categories, pages_per_category = 10)
+
+def fetch_movie_details(movie_id, api_key = key):
+    base_url = f"https://api.themoviedb.org/3/movie/{movie_id}"
+    params = {'api_key': api_key}
+
+    try:
+        response = requests.get(base_url, params = params)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Unable to Fetch Details for Movie ID {movie_id}: {e}")
+        return None
+
+def fetch_all_movie_details(movie_list, delay = 0.5, max_movies = None, api_key = key, verbose = True):
+    movies_detailed = []
+    for i, movie in enumerate(movie_list):
+        if max_movies and i >= max_movies:
+            break
+
+        movie_id = movie.get('id')
+        if movie_id:
+            details = fetch_movie_details(movie_id, api_key)
+            if details:
+                movies_detailed.append(details)
+                if verbose == True:
+                    print(f"{i + 1}: Got Details For Movie Titled: {details.get('title')}")
+            time.sleep(delay)
+
+    return movies_detailed
+
+detailed_data = fetch_all_movie_details(all_movies, delay = 0.5)
+
+import pandas as pd
+movies_df = pd.DataFrame(all_movies)
+movies_df.columns
+movies_df = movies_df.drop(['backdrop_path', 'genre_ids', 'poster_path', 'original_title', 'video'], axis = 1)
+
+movies_df.head()
+
+details_df = pd.DataFrame(detailed_data)
+details_df.columns
+
+details_df['num_spoken_languages'] = details_df['spoken_languages'].apply(lambda x: len(x) if isinstance(x, list) else None)
+details_df['belongs_to_collection_boolean'] = details_df['belongs_to_collection'].apply(lambda x: False if x == None else True)
+details_df['genres']= details_df['genres'].apply(lambda x: [genre['name'] for genre in x] if isinstance(x, list) else [])
+details_df['production_companies'] = details_df['production_companies'].apply(lambda x: [company_name['name'] for company_name in x] if isinstance(x, list) else [])
+details_df = details_df[['belongs_to_collection_boolean', 'budget', 'genres', 'id', 'origin_country', 'production_companies', 'revenue', 'runtime', 'num_spoken_languages']]
+details_df.head()
+
+full_movie_list = pd.merge(movies_df, details_df, on='id', how='left')
+full_movie_list
+full_movie_list['id'].duplicated().sum()
+full_movie_list = full_movie_list.drop_duplicates(subset = 'id')
+full_movie_list['id'].duplicated().sum()
+full_movie_list.to_csv("Movies.csv")

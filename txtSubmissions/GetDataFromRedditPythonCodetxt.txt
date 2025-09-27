@@ -1,0 +1,61 @@
+import os
+from dotenv import load_dotenv
+import pandas as pd
+import time
+import praw
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from tqdm import tqdm
+
+df = pd.read_csv("Movies.csv")
+load_dotenv()
+client_id = os.getenv("reddit_movie_client_id")
+print("API key loaded:", client_id is not None)
+secret_id = os.getenv("reddit_movie_secret_id")
+print("API key loaded:", secret_id is not None)
+reddit = praw.Reddit(client_id = client_id, client_secret = secret_id, user_agent = 'movieScrapeCHUI')
+analyzer = SentimentIntensityAnalyzer()
+sentiment_scores = []
+
+for title in tqdm(df["title"]):
+    try:
+        query = f'title:"{title}"'
+        posts = reddit.subreddit("movies").search(query, limit=5)
+
+        weighted_scores = []
+        total_weight = 0
+
+        for post in posts:
+            post_text = (post.title or "") + " " + (post.selftext or "")
+            post_score = analyzer.polarity_scores(post_text)["compound"]
+            weight = max(post.score, 1)
+            weighted_scores.append(post_score * weight)
+            total_weight += weight
+
+            post.comments.replace_more(limit=0)
+            for comment in post.comments.list()[:20]:  # Top 20 comments
+                if comment.body:
+                    comment_score = analyzer.polarity_scores(comment.body)["compound"]
+                    comment_weight = max(comment.score, 1)
+                    weighted_scores.append(comment_score * comment_weight)
+                    total_weight += comment_weight
+
+        if total_weight > 0:
+            avg_sentiment = sum(weighted_scores) / total_weight
+        else:
+            avg_sentiment = None
+
+        sentiment_scores.append(avg_sentiment)
+
+    except Exception as e:
+        print(f"Error for '{title}': {e}")
+        sentiment_scores.append(None)
+
+    time.sleep(1)  # respect Reddit's rate limits
+
+df["reddit_sentiment_weighted"] = sentiment_scores
+df.to_csv("reddit_sentiment_scores.csv", index=False)
+
+
+df
+
+df.to_csv("MoviesWithRedditSentiment.csv", index = False)
